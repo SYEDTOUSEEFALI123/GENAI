@@ -1,0 +1,82 @@
+# import necessary libraries
+import torch
+import torch.onnx
+from transformers import GPT2Model, GPT2Tokenizer, GPT2LMHeadModel, AdamW
+from torch.utils.data import DataLoader, Dataset
+from openvino.inference_engine import IECore
+import numpy as np
+
+# convert PyTorch model to ONNX format
+def convert_to_onnx(model, dummy_input, onnx_path):
+    torch.onnx.export(model, dummy_input, onnx_path, input_names=['input'], output_names=['output'], opset_version=11)
+    print(f"Model has been converted to ONNX and saved at {onnx_path}")
+
+# run inference using OpenVINO™ Inference Engine
+def run_inference(ir_model_path, input_data):
+    ie = IECore()
+    net = ie.read_network(model=f'{ir_model_path}.xml', weights=f'{ir_model_path}.bin')
+    exec_net = ie.load_network(network=net, device_name='CPU')
+    
+    input_blob = next(iter(net.input_info))
+    output_blob = next(iter(net.outputs))
+    
+    result = exec_net.infer(inputs={input_blob: input_data})
+    return result[output_blob]
+
+# fine-tune a GPT-2 model using PyTorch
+class TextDataset(Dataset):
+    def __init__(self, tokenizer, texts, max_length):
+        self.tokenizer = tokenizer
+        self.texts = texts
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        encodings = self.tokenizer(self.texts[idx], truncation=True, padding='max_length', max_length=self.max_length)
+        return torch.tensor(encodings['input_ids']), torch.tensor(encodings['attention_mask'])
+
+def fine_tune(model, tokenizer, dataset, epochs=1, batch_size=2, lr=5e-5):
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    optimizer = AdamW(model.parameters(), lr=lr)
+    
+    model.train()
+    for epoch in range(epochs):
+        for input_ids, attention_mask in dataloader:
+            outputs = model(input_ids, attention_mask=attention_mask, labels=input_ids)
+            loss = outputs.loss
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+        print(f'Epoch {epoch+1} completed. Loss: {loss.item()}')
+
+# main function to run the conversion, inference, and fine-tuning
+if __name__ == "__main__":
+    # Convert PyTorch model to ONNX
+    model = GPT2Model.from_pretrained('gpt2')
+    dummy_input = torch.randn(1, 10)  # Adjust input size as necessary
+    onnx_path = 'gpt2_model.onnx'
+    convert_to_onnx(model, dummy_input, onnx_path)
+    
+    # Convert ONNX model to Intermediate Representation (IR) using OpenVINO™ Model Optimizer
+    import os
+    os.system("source /opt/intel/openvino/bin/setupvars.sh && mo --input_model gpt2_model.onnx --output_dir ir_model/")
+    
+    # Run inference using the IR model
+    ir_model_path = 'ir_model/gpt2_model'
+    input_data = np.random.randn(1, 10).astype(np.float32)  # Adjust input data as necessary
+    result = run_inference(ir_model_path, input_data)
+    print(f"Inference result: {result}")
+    
+    # Fine-tune the GPT-2 model
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    model = GPT2LMHeadModel.from_pretrained('gpt2')
+    texts = ["Example text for fine-tuning the GPT-2 model."] * 100  # Example texts for fine-tuning
+    
+    dataset = TextDataset(tokenizer, texts, max_length=50)
+    fine_tune(model, tokenizer, dataset, epochs=3, batch_size=2)
+    
+    model.save_pretrained('./fine_tuned_gpt2')
+    tokenizer.save_pretrained('./fine_tuned_gpt2')
+    print("Model fine-tuning completed and saved.")
