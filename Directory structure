@@ -1,0 +1,14 @@
+GenAI_Intel_OpenVINO_Project/
+│
+├── convert_model/
+│   ├── convert_to_onnx.py
+│   ├── convert_to_ir.sh
+│
+├── inference/
+│   ├── run_inference.py
+│
+├── fine_tuning/
+│   ├── fine_tune_model.py
+│
+├── README.md
+└── requirements.txt
